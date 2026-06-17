@@ -101,10 +101,10 @@ export class InvestorService extends Context.Service<InvestorService, {
   ingestFromUrl(opts: {
     name: string
     url:  string
-  }):                                          Effect.Effect<Investor>
+  }):                                         Effect.Effect<Investor>
   getById(id: InvestorId):                    Effect.Effect<Investor, InvestorError>
   listAll():                                  Effect.Effect<ReadonlyArray<Investor>>
-  matchFounder(profile: FounderProfile): Effect.Effect<ReadonlyArray<MatchResult>>
+  matchFounder(profile: FounderProfile):      Effect.Effect<ReadonlyArray<MatchResult>>
   searchSources(name: string):                Effect.Effect<ReadonlyArray<SourceResult>>
 }>()("agentic-matching/investor/InvestorService") {
   static readonly layer = Layer.effect(
@@ -117,6 +117,7 @@ export class InvestorService extends Context.Service<InvestorService, {
       const embedModel = yield* EmbeddingModel
 
       const extractAudio = Effect.fn("InvestorService.extractAudio")(function*(url: string) {
+        fs.mkdirSync(AUDIO_DIR, { recursive: true })
         const outPath = path.join(AUDIO_DIR, `investor-${Date.now()}.mp3`)
         yield* Effect.tryPromise({
           try:   () => ytDlp(url, outPath),
@@ -137,7 +138,7 @@ export class InvestorService extends Context.Service<InvestorService, {
         const outPath   = path.join(TRANSCRIPTIONS_DIR, `${path.basename(audioPath, ".mp3")}.txt`)
         const wrapped   = cleaned.replace(/(.{120})\s/g, "$1\n")
         yield* Effect.try({
-          try:   () => fs.writeFileSync(outPath, wrapped, "utf8"),
+          try:   () => { fs.mkdirSync(TRANSCRIPTIONS_DIR, { recursive: true }); fs.writeFileSync(outPath, wrapped, "utf8") },
           catch: (e) => e as Error
         }).pipe(Effect.orDie)
         return cleaned
