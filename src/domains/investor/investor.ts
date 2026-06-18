@@ -25,7 +25,7 @@ const YTDLP_BIN           = path.join(PROJECT_ROOT, ".venv/bin/yt-dlp")
 const EXTRACT_PERSONA_MD   = path.join(PROJECT_ROOT, "src/prompts/extract-persona.md")
 const SENTIMENT_ANALYSIS_MD = path.join(PROJECT_ROOT, "src/prompts/sentiment-analysis.md")
 
-const extractPersonaTemplate   = fs.readFileSync(EXTRACT_PERSONA_MD, "utf8")
+const extractPersonaTemplate    = fs.readFileSync(EXTRACT_PERSONA_MD, "utf8")
 const sentimentAnalysisTemplate = fs.readFileSync(SENTIMENT_ANALYSIS_MD, "utf8")
 
 const VIDEO_URL_RE  = /youtube\.com|youtu\.be|vimeo\.com|podcasts\.apple\.com|open\.spotify\.com|anchor\.fm|buzzsprout\.com|simplecast\.com|transistor\.fm/i
