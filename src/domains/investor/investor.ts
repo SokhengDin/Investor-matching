@@ -14,6 +14,7 @@ import * as OpenAiEmbeddingModel from "@effect/ai-openai-compat/OpenAiEmbeddingM
 import { AppConfig }        from "../../config.js"
 import { InvestorRepo }    from "./investor.repo.js"
 import { InvestorSources, type SourceResult } from "./investor.sources.js"
+import { resolveRssAudio } from "./investor.rss.js"
 import { Investor, InvestorError, InvestorId, MatchResult, PipelineError, Persona, Sentiment, FounderProfile } from "./investor.types.js"
 
 const MISTRAL_API_URL = "https://api.mistral.ai/v1"
@@ -28,14 +29,14 @@ const SENTIMENT_ANALYSIS_MD = path.join(PROJECT_ROOT, "src/prompts/sentiment-ana
 const extractPersonaTemplate    = fs.readFileSync(EXTRACT_PERSONA_MD, "utf8")
 const sentimentAnalysisTemplate = fs.readFileSync(SENTIMENT_ANALYSIS_MD, "utf8")
 
-const VIDEO_URL_RE  = /youtube\.com|youtu\.be|vimeo\.com|podcasts\.apple\.com|open\.spotify\.com|anchor\.fm|buzzsprout\.com|simplecast\.com|transistor\.fm/i
-const ARTICLE_URL_RE = /wikipedia\.org|linkedin\.com|twitter\.com|x\.com|crunchbase\.com|techcrunch\.com|forbes\.com|bloomberg\.com|nytimes\.com|wsj\.com|medium\.com/i
+const VIDEO_URL_RE    = /youtube\.com|youtu\.be|vimeo\.com|podcasts\.apple\.com|open\.spotify\.com|anchor\.fm|buzzsprout\.com|simplecast\.com|transistor\.fm/i
+const ARTICLE_URL_RE  = /wikipedia\.org|linkedin\.com|twitter\.com|x\.com|crunchbase\.com|techcrunch\.com|forbes\.com|bloomberg\.com|nytimes\.com|wsj\.com|medium\.com/i
 
 function transcribeAudio(audioPath: string, apiKey: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const boundary = `----FormBoundary${Date.now().toString(16)}`
+    const boundary  = `----FormBoundary${Date.now().toString(16)}`
     const audioData = fs.readFileSync(audioPath)
-    const header = Buffer.from(
+    const header    = Buffer.from(
       `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nvoxtral-mini-2507\r\n` +
       `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.mp3"\r\nContent-Type: audio/mpeg\r\n\r\n`
     )
@@ -116,16 +117,31 @@ export class InvestorService extends Context.Service<InvestorService, {
       const llm        = yield* LanguageModel
       const embedModel = yield* EmbeddingModel
 
-      const extractAudio = Effect.fn("InvestorService.extractAudio")(function*(url: string) {
+      const extractAudio = Effect.fn("InvestorService.extractAudio")(function*(url: string, nameHint: string) {
         fs.mkdirSync(AUDIO_DIR, { recursive: true })
         const outPath = path.join(AUDIO_DIR, `investor-${Date.now()}.mp3`)
-        yield* Effect.tryPromise({
-          try:   () => ytDlp(url, outPath),
-          catch: (e) => e as Error
-        }).pipe(
-          Effect.timeout("90 seconds"),
-          Effect.orDie
-        )
+
+        const rss = yield* resolveRssAudio(url, nameHint)
+        if (rss !== undefined) {
+          yield* Effect.tryPromise({
+            try: async () => {
+              const res    = await fetch(rss.audioUrl)
+              const buffer = Buffer.from(await res.arrayBuffer())
+              fs.writeFileSync(outPath, buffer)
+            },
+            catch: (e) => e as Error
+          }).pipe(Effect.orDie)
+        } else {
+          // Fallback: yt-dlp subprocess
+          yield* Effect.tryPromise({
+            try:   () => ytDlp(url, outPath),
+            catch: (e) => e as Error
+          }).pipe(
+            Effect.timeout("90 seconds"),
+            Effect.orDie
+          )
+        }
+
         return outPath
       })
 
@@ -181,7 +197,7 @@ export class InvestorService extends Context.Service<InvestorService, {
         name:      string
         sourceUrl: string
       }) {
-        const audioPath   = yield* extractAudio(opts.sourceUrl)
+        const audioPath   = yield* extractAudio(opts.sourceUrl, opts.name)
         const transcript  = yield* transcribe(audioPath)
         const persona     = yield* extractPersona(transcript).pipe(Effect.orDie)
         const personaText = `${persona.thesis} ${persona.sectors.join(" ")} ${persona.style}`
