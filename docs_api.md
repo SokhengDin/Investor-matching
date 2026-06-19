@@ -127,26 +127,31 @@ Priority order:
 
 Given the selected URL, download the audio track as an MP3 and save it locally for transcription.
 
-#### Example — Primary path (RSS direct download, planned beta)
+#### Example — Primary path (RSS direct download)
 
-The preferred path is to resolve the podcast's RSS feed and pull the `.mp3` URL directly — no scraping, no Python dependency:
+For Apple Podcasts URLs, the system resolves the real `.mp3` without any scraping:
 
 ```
-Podcast: "a16z Podcast" — Episode: "Marc Andreessen on AI"
+Input:   https://podcasts.apple.com/us/podcast/marc-andreessen-.../id1154105909?i=1000691052043
 
-RSS feed:  https://feeds.simplecast.com/JGE3yC0V
-           → <enclosure url="https://cdn.simplecast.com/audio/abc123.mp3" type="audio/mpeg" />
+Step 1:  iTunes Lookup API (no key required)
+         GET https://itunes.apple.com/lookup?id=1154105909&entity=podcast
+         → { feedUrl: "https://feeds.simplecast.com/JGE3yC0V" }
 
-Direct download:
-  GET https://cdn.simplecast.com/audio/abc123.mp3
-  → audio/investor-1718668800000.mp3
+Step 2:  Parse RSS feed (rss-parser)
+         <enclosure url="https://cdn.simplecast.com/audio/abc123.mp3" type="audio/mpeg" />
+         Best match by keyword score against investor name
+
+Step 3:  Direct download
+         GET https://cdn.simplecast.com/audio/abc123.mp3
+         → audio/investor-1718668800000.mp3
 ```
 
-This approach works for any podcast with a public RSS feed (the vast majority) and requires no external tooling beyond a standard HTTP client.
+No Python, no yt-dlp, no scraping — just HTTP and RSS parsing.
 
-#### Example — Fallback path (yt-dlp, current)
+#### Example — Fallback path (yt-dlp)
 
-When no RSS feed is available or the source is a YouTube video, yt-dlp handles extraction:
+When the source is a YouTube video or RSS resolution returns nothing, yt-dlp handles extraction:
 
 ```bash
 yt-dlp -x --audio-format mp3 --audio-quality 0 \
@@ -154,37 +159,66 @@ yt-dlp -x --audio-format mp3 --audio-quality 0 \
   -o "audio/investor-1718668800000.mp3"
 ```
 
-Output: `audio/investor-<timestamp>.mp3` — ready to feed into Voxtral transcription.
-
 #### How it works in code
 
-`extractAudio` spawns `.venv/bin/yt-dlp` as a Node.js child process. `stderr` is captured; a non-zero exit code raises immediately with the error output. A 90-second timeout kills the process if it hangs.
+`extractAudio` tries the RSS path first via `resolveRssAudio` (`src/domains/investor/investor.rss.ts`). If it returns an audio URL, the file is streamed directly with `fetch`. If it returns `undefined`, yt-dlp is spawned as a subprocess fallback. Both paths write to the same `audio/` output path.
 
 ```typescript
-const extractAudio = Effect.fn("InvestorService.extractAudio")(function*(url: string) {
+const extractAudio = Effect.fn("InvestorService.extractAudio")(function*(url: string, nameHint: string) {
   fs.mkdirSync(AUDIO_DIR, { recursive: true })
   const outPath = path.join(AUDIO_DIR, `investor-${Date.now()}.mp3`)
-  yield* Effect.tryPromise({
-    try:   () => ytDlp(url, outPath),   // node:child_process.spawn
-    catch: (e) => e as Error
-  }).pipe(
-    Effect.timeout("90 seconds"),
-    Effect.orDie
-  )
+
+  const rss = yield* resolveRssAudio(url, nameHint)   // investor.rss.ts
+  if (rss !== undefined) {
+    // RSS path: fetch .mp3 directly
+    yield* Effect.tryPromise({
+      try: async () => {
+        const res    = await fetch(rss.audioUrl)
+        const buffer = Buffer.from(await res.arrayBuffer())
+        fs.writeFileSync(outPath, buffer)
+      },
+      catch: (e) => e as Error
+    }).pipe(Effect.orDie)
+  } else {
+    // Fallback: yt-dlp subprocess (.venv/bin/yt-dlp)
+    yield* Effect.tryPromise({
+      try:   () => ytDlp(url, outPath),
+      catch: (e) => e as Error
+    }).pipe(Effect.timeout("90 seconds"), Effect.orDie)
+  }
+
   return outPath
 })
 ```
 
+#### `resolveRssAudio` — how the RSS resolver works (`investor.rss.ts`)
+
+```
+resolveRssAudio(sourceUrl, nameHint)
+  │
+  ├─ Apple Podcasts URL?
+  │     → extract podcast ID from URL
+  │     → GET itunes.apple.com/lookup?id=<id>&entity=podcast
+  │     → feedUrl from response
+  │
+  ├─ Already an RSS feed URL? (.xml / /feed / /rss)
+  │     → use directly
+  │
+  └─ rss-parser.parseURL(feedUrl)
+        → score each episode by keyword match against nameHint
+        → return highest-scoring enclosure URL
+        → if no match, return first episode with an enclosure
+        → on any error, return undefined (silent fallback to yt-dlp)
+```
+
 File output: `audio/investor-<timestamp>.mp3`
 
-#### Roadmap
+#### Approach summary
 
-| Approach | Status | Works for |
+| Approach | Triggers when | Dependencies |
 |---|---|---|
-| RSS feed → direct `.mp3` URL | **Planned (beta)** | Any podcast with a public feed |
-| yt-dlp subprocess (`.venv`) | **Current** | YouTube, Apple Podcasts, Spotify, Vimeo, Anchor, Buzzsprout, Simplecast, Transistor |
-
-The RSS path is the target architecture — it removes the Python virtualenv dependency entirely, making the system portable in containers and serverless environments. yt-dlp remains as a fallback for YouTube-only sources where no RSS feed exists.
+| RSS → iTunes API → feed → `.mp3` | Source is an Apple Podcasts URL | `rss-parser` (npm), `fetch` |
+| yt-dlp subprocess | RSS returns nothing, or source is YouTube/Vimeo/etc. | `.venv/bin/yt-dlp` (Python) |
 
 ---
 

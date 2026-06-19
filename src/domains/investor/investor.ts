@@ -3,7 +3,7 @@ import * as path          from "node:path"
 import * as https         from "node:https"
 import { fileURLToPath }  from "node:url"
 import { spawn }          from "node:child_process"
-import { Config, Context, Effect, Layer, Redacted } from "effect"
+import { Config, Context, Effect, Layer, Redacted, TxSemaphore } from "effect"
 import { NodeServices }   from "@effect/platform-node"
 import { FetchHttpClient } from "effect/unstable/http"
 import { LanguageModel }  from "effect/unstable/ai/LanguageModel"
@@ -116,6 +116,7 @@ export class InvestorService extends Context.Service<InvestorService, {
       const { mistralApiKey } = yield* AppConfig
       const llm        = yield* LanguageModel
       const embedModel = yield* EmbeddingModel
+      const llmSem     = yield* TxSemaphore.make(2)
 
       const extractAudio = Effect.fn("InvestorService.extractAudio")(function*(url: string, nameHint: string) {
         fs.mkdirSync(AUDIO_DIR, { recursive: true })
@@ -173,8 +174,10 @@ export class InvestorService extends Context.Service<InvestorService, {
       const extractPersona = Effect.fn("InvestorService.extractPersona")(function*(transcript: string) {
         const [sentiment, personaResponse] = yield* Effect.all(
           [
-            analyzeSentiment(transcript),
-            llm.generateText({ prompt: extractPersonaTemplate.replace("{{transcript}}", transcript) }).pipe(Effect.orDie)
+            TxSemaphore.withPermit(llmSem)(analyzeSentiment(transcript)),
+            TxSemaphore.withPermit(llmSem)(
+              llm.generateText({ prompt: extractPersonaTemplate.replace("{{transcript}}", transcript) }).pipe(Effect.orDie)
+            )
           ],
           { concurrency: "unbounded" }
         )
